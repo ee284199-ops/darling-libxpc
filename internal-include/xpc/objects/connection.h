@@ -75,6 +75,8 @@ struct xpc_connection_s {
 	//
 	pthread_rwlock_t activated_lock;
 	bool activated;
+	// a client of a service that couldn't be looked up: it never connects
+	bool is_invalid;
 	pthread_rwlock_t server_peers_lock;
 	xpc_genarr_connection_t server_peers;
 	pthread_rwlock_t remote_credentials_lock;

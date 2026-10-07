@@ -798,6 +798,20 @@ out:
 error_out:
 	xpc_mach_port_release_send(this->send_port);
 	xpc_mach_port_release_receive(this->recv_port);
+	this->send_port = MACH_PORT_NULL;
+	this->recv_port = MACH_PORT_NULL;
+
+	if (!this->is_listener && this->service_name) {
+		// Like on macOS, a client of a service that doesn't exist is invalid from the start: sending
+		// fails right away (rather than waiting for a reply forever) and the event handler gets
+		// XPC_ERROR_CONNECTION_INVALID, through the cancellation of a channel without ports.
+		this->is_invalid = true;
+		this->activated = true;
+		dispatch_mach_connect(this->mach_ctx, MACH_PORT_NULL, MACH_PORT_NULL, NULL);
+		dispatch_mach_cancel(this->mach_ctx);
+		return;
+	}
+
 	this->activated = false;
 }
 
@@ -892,8 +906,23 @@ error_out:
 	dispatch_mach_send_barrier(this->mach_ctx, barrier);
 }
 
+- (BOOL)isInvalid
+{
+	XPC_THIS_DECL(connection);
+
+	pthread_rwlock_rdlock(&this->activated_lock);
+	BOOL invalid = this->is_invalid;
+	pthread_rwlock_unlock(&this->activated_lock);
+
+	return invalid;
+}
+
 - (void)sendMessage: (XPC_CLASS(dictionary)*)contents
 {
+	if ([self isInvalid]) {
+		return;
+	}
+
 	@autoreleasepool {
 		XPC_THIS_DECL(connection);
 		XPC_CLASS(serializer)* serializer = [XPC_CLASS(serializer) serializer];
@@ -921,6 +950,15 @@ error_out:
 
 - (void)sendMessage: (XPC_CLASS(dictionary)*)contents queue: (dispatch_queue_t)queue withReply: (xpc_handler_t)handler
 {
+	if ([self isInvalid]) {
+		xpc_handler_t replyHandler = Block_copy(handler);
+		dispatch_async(queue ? queue : dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+			replyHandler(XPC_ERROR_CONNECTION_INVALID);
+			Block_release(replyHandler);
+		});
+		return;
+	}
+
 	@autoreleasepool {
 		XPC_THIS_DECL(connection);
 		XPC_CLASS(serializer)* serializer = [XPC_CLASS(serializer) serializer];
@@ -963,6 +1001,10 @@ error_out:
 	dispatch_mach_msg_t reply = NULL;
 	XPC_CLASS(dictionary)* result = nil;
 	mach_msg_header_t* header = NULL;
+
+	if ([self isInvalid]) {
+		return XPC_ERROR_CONNECTION_INVALID;
+	}
 
 	@autoreleasepool {
 		XPC_CLASS(serializer)* serializer = [XPC_CLASS(serializer) serializer];
