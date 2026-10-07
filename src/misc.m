@@ -43,9 +43,26 @@ static struct os_system_version current_version = {0};
 static dispatch_once_t current_version_once;
 
 XPC_EXPORT
-bool _availability_version_check(size_t version_count, dyld_build_version_t* versions) {
-	// i'm *pretty* sure the second argument is an array of `dyld_build_version_t`
-	xpc_stub();
+int os_system_version_get_current_version(struct os_system_version* out_version);
+
+// What `@available` and `#available` checks call (through compiler-rt's
+// __isPlatformVersionAtLeast): whether the running OS is at least the version given for the
+// process's platform. Versions are packed as major << 16 | minor << 8 | patch.
+XPC_EXPORT
+bool _availability_version_check(uint32_t version_count, dyld_build_version_t* versions) {
+	struct os_system_version current;
+	uint32_t current_packed;
+	uint32_t i;
+
+	if (os_system_version_get_current_version(&current) != 0)
+		return false;
+	current_packed = (current.major << 16) | (current.minor << 8) | current.patch;
+
+	for (i = 0; i < version_count; i++) {
+		// a zippered library also lists its Mac Catalyst version, which doesn't apply here
+		if (versions[i].platform == PLATFORM_MACOS)
+			return current_packed >= versions[i].version;
+	}
 	return false;
 };
 
